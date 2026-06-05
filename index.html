@@ -146,7 +146,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 /* ── APPS PANEL ── */
 #apps-panel{position:fixed;inset:0;z-index:150;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
 #apps-panel.open{display:flex;}
-.apps-box{background:var(--bg2);border:1px solid var(--border2);border-radius:18px;width:480px;max-width:95vw;overflow:hidden;}
+.apps-box(background:var(--bg2);border:1px solid var(--border2);border-radius:18px;width:480px;max-width:95vw;overflow:hidden;}
 .apps-box-head{padding:18px 20px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
 .apps-box-head h3{font-size:15px;font-weight:500;}
 .apps-close{width:28px;height:28px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--text2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;}
@@ -353,6 +353,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 // ═══════════════════════════════════════════════
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx0j-DsFoGkCzkAcxei4KW9u4-Pxwy8XH9J4UOiZ75QBvNat6lvwqAHCBrxg9oqpb2B/exec";
 
+// Cache local para Blob URLs de mídia de modo a evitar múltiplos downloads desnecessários
+const blobCache = {};
+
 // ═══════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════
@@ -455,7 +458,7 @@ async function appendMsg(r, msg) {
   try {
     await fetch(SCRIPT_URL, {
       method: "POST",
-      mode: 'no-cors', // Envio sem restrição de CORS, porém resposta opaca (seguro para o GAS)
+      mode: 'no-cors', 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(msg)
     });
@@ -488,6 +491,26 @@ async function sysMsg(r, text) {
   await appendMsg(r, { nick:'sistema', t:Date.now(), type:'system', text });
 }
 
+// Utilitário assíncrono para injetar Blob URL em tempo de renderização
+async function loadMediaToElement(url, elementId, attribute) {
+  if (!url) return;
+  if (blobCache[url]) {
+    const el = document.getElementById(elementId);
+    if (el) el.setAttribute(attribute, blobCache[url]);
+    return;
+  }
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    blobCache[url] = blobUrl;
+    const el = document.getElementById(elementId);
+    if (el) el.setAttribute(attribute, blobUrl);
+  } catch (e) {
+    console.error("Erro ao converter stream de mídia para Blob local:", e);
+  }
+}
+
 // ═══════════════════════════════════════════════
 // RENDER MESSAGES
 // ═══════════════════════════════════════════════
@@ -502,7 +525,9 @@ function renderMsgs(msgs) {
   }
 
   let html='', lastDate='', lastSender='';
-  list.forEach(msg => {
+  const mediaTasks = [];
+
+  list.forEach((msg, index) => {
     const d = new Date(msg.t).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'});
     if (d!==lastDate) { html+=`<div class="date-div"><span>${d}</span></div>`; lastDate=d; lastSender=''; }
     const isMine = msg.nick===nick;
@@ -515,15 +540,21 @@ function renderMsgs(msgs) {
     html += `<div class="msg-group ${isMine?'mine':'theirs'}">`;
     if (showSender) html+=`<div class="msg-meta"><span class="msg-sender">${esc(msg.nick)}</span><span>${time}</span></div>`;
 
+    const elementUniqueId = `media-${msg.t}-${index}`;
+
     if (msg.type==='image') {
-      html+=`<div class="bubble" style="padding:5px"><img class="msg-img" src="${esc(msg.dataUrl)}" alt="${esc(msg.fileName)}" onclick="openLb('${esc(msg.dataUrl)}')" loading="lazy"><div style="font-size:10px;opacity:.6;padding:3px 2px 0">${esc(msg.fileName)}</div></div>`;
+      html+=`<div class="bubble" style="padding:5px"><img id="${elementUniqueId}" class="msg-img" src="" alt="${esc(msg.fileName)}" onclick="openLb(this.src)" loading="lazy"><div style="font-size:10px;opacity:.6;padding:3px 2px 0">${esc(msg.fileName)}</div></div>`;
+      mediaTasks.push({ url: msg.dataUrl, id: elementUniqueId, attr: 'src' });
     } else if (msg.type==='video') {
-      html+=`<div class="bubble" style="padding:5px"><video class="msg-vid" controls src="${esc(msg.dataUrl)}"></video><div style="font-size:10px;opacity:.6;padding:3px 2px 0">${esc(msg.fileName)}</div></div>`;
+      html+=`<div class="bubble" style="padding:5px"><video id="${elementUniqueId}" class="msg-vid" controls src=""></video><div style="font-size:10px;opacity:.6;padding:3px 2px 0">${esc(msg.fileName)}</div></div>`;
+      mediaTasks.push({ url: msg.dataUrl, id: elementUniqueId, attr: 'src' });
     } else if (msg.type==='audio') {
-      html+=`<div class="bubble"><div style="font-size:11px;margin-bottom:5px;opacity:.7">🎵 ${esc(msg.fileName||'Áudio')}</div><div class="msg-aud"><audio controls src="${esc(msg.dataUrl)}"></audio></div></div>`;
+      html+=`<div class="bubble"><div style="font-size:11px;margin-bottom:5px;opacity:.7">🎵 ${esc(msg.fileName||'Áudio')}</div><div class="msg-aud"><audio id="${elementUniqueId}" controls src=""></audio></div></div>`;
+      mediaTasks.push({ url: msg.dataUrl, id: elementUniqueId, attr: 'src' });
     } else if (msg.type==='file') {
       const icon = fileIcon((msg.fileName||'').split('.').pop().toLowerCase());
-      html+=`<div class="bubble"><div class="msg-file"><span class="file-ico">${icon}</span><div class="file-info"><div class="file-nm">${esc(msg.fileName)}</div><div class="file-sz">${fmtSize(msg.fileSize)}</div></div><a class="dl-btn" href="${esc(msg.dataUrl)}" download="${esc(msg.fileName)}">⬇️</a></div></div>`;
+      html+=`<div class="bubble"><div class="msg-file"><span class="file-ico">${icon}</span><div class="file-info"><div class="file-nm">${esc(msg.fileName)}</div><div class="file-sz">${fmtSize(msg.fileSize)}</div></div><a id="${elementUniqueId}" class="dl-btn" href="" download="${esc(msg.fileName)}">⬇️</a></div></div>`;
+      mediaTasks.push({ url: msg.dataUrl, id: elementUniqueId, attr: 'href' });
     } else {
       let t = esc(msg.text||'');
       if (sv) t = t.replace(new RegExp(sv.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'), m=>`<span class="highlight">${m}</span>`);
@@ -538,7 +569,11 @@ function renderMsgs(msgs) {
     }
     html+=`</div>`;
   });
+  
   c.innerHTML = html;
+
+  // Resolve as promessas de download de mídia de forma assíncrona pós-renderização do esqueleto DOM
+  mediaTasks.forEach(task => loadMediaToElement(task.url, task.id, task.attr));
 }
 
 function scrollBot(force=false) {
@@ -564,7 +599,6 @@ async function doSend() {
     }
     inp.value = ''; autoResize(inp);
     
-    // Pequeno delay para o Sheets processar antes de forçar o recarregamento na tela
     setTimeout(async () => {
       const msgs = await loadMsgs(room);
       lastMsgCount = msgs.length;
@@ -605,6 +639,7 @@ function readFile(file, onProgress) {
   });
 }
 
+// ... (O resto do bloco permanece mantido exatamente conforme os padrões)
 function showUp(name) { document.getElementById('upload-prog').style.display='block'; document.getElementById('up-lbl').textContent=`Preparando ${name}…`; setUpBar(0); }
 function setUpBar(p) { document.getElementById('up-bar').style.width=p+'%'; }
 function hideUp() { document.getElementById('upload-prog').style.display='none'; }
@@ -653,7 +688,6 @@ document.getElementById('rec-btn').addEventListener('click', async () => {
         await sendFile(file);
         stream.getTracks().forEach(t=>t.stop());
         showToast('🎙️ Áudio enviado!');
-        // Força recarregamento
         setTimeout(async () => {
           const msgs = await loadMsgs(room);
           lastMsgCount = msgs.length;
@@ -741,7 +775,7 @@ function openApp(url){ window.open(url,'_blank'); closeApps(); }
 document.getElementById('apps-panel').addEventListener('click', e=>{ if(e.target===document.getElementById('apps-panel')) closeApps(); });
 
 // ═══════════════════════════════════════════════
-// MEMBERS (Desativado no modo Planilha para poupar quota)
+// MEMBERS
 // ═══════════════════════════════════════════════
 document.getElementById('members-btn').addEventListener('click', ()=>{
   showToast('👥 Presença ao vivo desativada na versão serverless.', 3500);
