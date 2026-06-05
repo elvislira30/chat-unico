@@ -5,11 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NexChat</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
-
 <style>
-/* O CSS PERMANECE EXATAMENTE IGUAL - Omitido aqui a tag de fechamento para não quebrar o layout, todo o CSS foi mantido */
 :root{
   --bg:#0d0d0f;--bg2:#141416;--bg3:#1c1c1f;--bg4:#242428;
   --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);
@@ -253,7 +249,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
   <div id="sidebar">
     <div class="sb-head">
       <div class="logo"><div class="logo-dot"></div>NexChat</div>
-      <div class="sb-sub">chat universal • histórico na nuvem</div>
+      <div class="sb-sub">chat universal • nuvem google</div>
     </div>
     <div class="sb-rooms">
       <div class="sb-label">Salas</div>
@@ -352,21 +348,10 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 </div>
 
 <script>
-// ═══════════════════════════════════════════════════════
-// CONFIGURAÇÃO FIREBASE - INCLUA SUAS CHAVES AQUI
-// ═══════════════════════════════════════════════════════
-const firebaseConfig = {
-  apiKey: "SUA_API_KEY",
-  authDomain: "SEU_PROJETO.firebaseapp.com",
-  databaseURL: "https://SEU_PROJETO-default-rtdb.firebaseio.com",
-  projectId: "SEU_PROJETO"
-};
-
-// Inicializa o Firebase
-if (!firebase.apps.length) {
-  firebase.initializeApp(firebaseConfig);
-}
-const db = firebase.database();
+// ═══════════════════════════════════════════════
+// API GOOGLE APPS SCRIPT
+// ═══════════════════════════════════════════════
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx0j-DsFoGkCzkAcxei4KW9u4-Pxwy8XH9J4UOiZ75QBvNat6lvwqAHCBrxg9oqpb2B/exec";
 
 // ═══════════════════════════════════════════════
 // STATE
@@ -379,13 +364,13 @@ let mediaRec = null;
 let audioChunks = [];
 let typingTm = null;
 let lightMode = false;
-let rooms = [];
-let currentMsgs = []; 
-let currentRoomRef = null;
-let typingRef = null;
+let rooms = ['geral', 'links', 'mídia']; 
+let pollInterval = null;
+let lastMsgCount = 0;
+let currentMsgs = [];
 
 // ═══════════════════════════════════════════════
-// BOOT
+// BOOT & POLLING
 // ═══════════════════════════════════════════════
 window.addEventListener('DOMContentLoaded', () => {
   const saved = localStorage.getItem('nexchat:nick');
@@ -407,32 +392,27 @@ function doNick() {
 
 async function init() {
   document.getElementById('share-url').textContent = location.href.split('?')[0];
-  await loadRooms();
+  renderRooms();
   await switchRoom(room);
-  setOnline();
+  startPolling();
+}
+
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(async () => {
+    const msgs = await loadMsgs(room);
+    if (msgs.length !== lastMsgCount) {
+      lastMsgCount = msgs.length;
+      currentMsgs = msgs;
+      renderMsgs(msgs);
+      scrollBot();
+    }
+  }, 3000);
 }
 
 // ═══════════════════════════════════════════════
 // ROOMS
 // ═══════════════════════════════════════════════
-async function loadRooms() {
-  return new Promise((resolve) => {
-    db.ref('config/rooms').once('value', snapshot => {
-      if (snapshot.exists()) {
-        rooms = snapshot.val();
-      } else {
-        rooms = ['geral', 'links', 'mídia'];
-        saveRooms();
-      }
-      resolve();
-    });
-  });
-}
-
-function saveRooms() {
-  db.ref('config/rooms').set(rooms);
-}
-
 function renderRooms() {
   const ICONS = { geral:'💬', links:'🔗', mídia:'🎬' };
   const list = document.getElementById('room-list');
@@ -452,44 +432,54 @@ document.getElementById('add-room-btn').addEventListener('click', async () => {
   const clean = name.trim().toLowerCase().replace(/\s+/g,'-');
   if (rooms.includes(clean)) return showToast('Sala já existe!');
   rooms.push(clean);
-  saveRooms();
+  renderRooms();
   switchRoom(clean);
 });
 
 // ═══════════════════════════════════════════════
-// MESSAGES — Sincronização em Tempo Real (Firebase)
+// MESSAGES (FETCH DA PLANILHA)
 // ═══════════════════════════════════════════════
+async function loadMsgs(r) {
+  try {
+    const res = await fetch(`${SCRIPT_URL}?room=${r}`);
+    const data = await res.json();
+    return data;
+  } catch (e) {
+    console.error("Erro ao carregar mensagens:", e);
+    return [];
+  }
+}
+
+async function appendMsg(r, msg) {
+  msg.room = r; 
+  try {
+    await fetch(SCRIPT_URL, {
+      method: "POST",
+      mode: 'no-cors', // Envio sem restrição de CORS, porém resposta opaca (seguro para o GAS)
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(msg)
+    });
+  } catch (e) {
+    console.error("Erro ao enviar mensagem:", e);
+  }
+}
+
 async function switchRoom(r) {
   room = r;
   document.getElementById('room-name').textContent = '# ' + r;
   renderRooms();
-  
-  // Limpa interface e estado
+  lastMsgCount = 0;
   currentMsgs = [];
-  document.getElementById('msgs').innerHTML = '<div style="text-align:center;padding:50px 20px;color:var(--text3);"><div class="spinner" style="margin:0 auto 10px"></div><div style="font-size:12px">Carregando histórico...</div></div>';
-
-  // Desliga listeners antigos
-  if (currentRoomRef) currentRoomRef.off();
   
-  // Listener de digitação da nova sala
-  listenTyping(r);
-
-  // Escuta mensagens novas e antigas da sala atual
-  currentRoomRef = db.ref(`salas/${r}/mensagens`);
+  document.getElementById('msgs').innerHTML = '<div style="text-align:center;padding:50px 20px;color:var(--text3);"><div class="spinner" style="margin:0 auto 10px"></div><div style="font-size:12px">Buscando histórico na planilha...</div></div>';
   
-  // Ao carregar a primeira vez, o child_added traz tudo. Depois fica escutando.
-  currentRoomRef.on('child_added', (snapshot) => {
-    const msg = snapshot.val();
-    currentMsgs.push(msg);
-    renderMsgs(currentMsgs);
-    scrollBot();
-  });
-
-  await sysMsg(r, `${nick} entrou na sala`);
-}
-
-async function appendMsg(r, msg) {
-  await db.ref(`salas/${r}/mensagens`).push(msg);
+  const msgs = await loadMsgs(r);
+  lastMsgCount = msgs.length;
+  currentMsgs = msgs;
+  renderMsgs(msgs);
+  scrollBot(true);
+  
+  sysMsg(r, `${nick} entrou na sala`);
 }
 
 async function sysMsg(r, text) {
@@ -567,14 +557,22 @@ async function doSend() {
   document.getElementById('send-btn').disabled = true;
 
   try {
-    // Aviso: Em produção, usar Firebase Storage para arquivos para evitar strings base64 pesadas no DB.
     for (const f of pending) await sendFile(f);
     pending = []; updateAttPreview();
     if (text) {
-      await appendMsg(room, { nick, t:Date.now(), type:'text', text });
+      await appendMsg(room, { nick, t: Date.now(), type: 'text', text });
     }
     inp.value = ''; autoResize(inp);
-    scrollBot(true);
+    
+    // Pequeno delay para o Sheets processar antes de forçar o recarregamento na tela
+    setTimeout(async () => {
+      const msgs = await loadMsgs(room);
+      lastMsgCount = msgs.length;
+      currentMsgs = msgs;
+      renderMsgs(msgs); 
+      scrollBot(true);
+    }, 1500); 
+
   } catch(e) { showToast('❌ Erro: ' + (e.message||e)); }
 
   document.getElementById('send-btn').disabled = false;
@@ -585,7 +583,16 @@ async function sendFile(file) {
   const dataUrl = await readFile(file, pct => setUpBar(pct));
   hideUp();
   const type = detectType(file);
-  await appendMsg(room, { nick, t:Date.now(), type, dataUrl, fileName:file.name, fileSize:file.size });
+  
+  await appendMsg(room, { 
+    nick, 
+    t: Date.now(), 
+    type, 
+    fileBase64: dataUrl, 
+    mimeType: file.type,
+    fileName: file.name, 
+    fileSize: file.size 
+  });
 }
 
 function readFile(file, onProgress) {
@@ -608,7 +615,6 @@ document.getElementById('msg-input').addEventListener('input', function() {
   autoResize(this);
   const n=this.value.length, cc=document.getElementById('char-ct');
   cc.style.display=n>100?'inline':'none'; if(n>100) cc.textContent=n;
-  sendTyping();
 });
 
 function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,110)+'px'; }
@@ -647,6 +653,13 @@ document.getElementById('rec-btn').addEventListener('click', async () => {
         await sendFile(file);
         stream.getTracks().forEach(t=>t.stop());
         showToast('🎙️ Áudio enviado!');
+        // Força recarregamento
+        setTimeout(async () => {
+          const msgs = await loadMsgs(room);
+          lastMsgCount = msgs.length;
+          currentMsgs = msgs;
+          renderMsgs(msgs); scrollBot(true);
+        }, 1500);
       };
       mediaRec.start(); recording=true;
       document.getElementById('rec-btn').style.color='var(--red)';
@@ -659,51 +672,6 @@ document.getElementById('rec-btn').addEventListener('click', async () => {
     document.getElementById('rec-btn').textContent='🎙️';
   }
 });
-
-// ═══════════════════════════════════════════════
-// PRESENCE (Realtime)
-// ═══════════════════════════════════════════════
-function setOnline() {
-  const myRef = db.ref(`presence/${nick}`);
-  myRef.set({ nick, t: Date.now() });
-  myRef.onDisconnect().remove();
-  setInterval(() => myRef.set({ nick, t: Date.now() }), 20000);
-
-  db.ref('presence').on('value', snap => {
-    const active = [];
-    const now = Date.now();
-    snap.forEach(child => {
-      const v = child.val();
-      if (v && now - v.t < 45000) active.push(v.nick);
-    });
-    document.getElementById('online-ct').textContent = active.length ? `${active.length} online` : '';
-  });
-}
-
-// ═══════════════════════════════════════════════
-// TYPING (Realtime)
-// ═══════════════════════════════════════════════
-function sendTyping() {
-  const tRef = db.ref(`typing/${room}/${nick}`);
-  tRef.set({ nick, t: Date.now() });
-  tRef.onDisconnect().remove();
-  clearTimeout(typingTm);
-  typingTm = setTimeout(() => tRef.remove(), 3000);
-}
-
-function listenTyping(r) {
-  if (typingRef) typingRef.off();
-  typingRef = db.ref(`typing/${r}`);
-  typingRef.on('value', snap => {
-    const typers = [];
-    const now = Date.now();
-    snap.forEach(child => {
-      const v = child.val();
-      if (v && v.nick !== nick && now - v.t < 4000) typers.push(v.nick);
-    });
-    document.getElementById('typing-area').textContent = typers.length ? typers.join(', ') + (typers.length === 1 ? ' está digitando…' : ' estão digitando…') : '';
-  });
-}
 
 // ═══════════════════════════════════════════════
 // SEARCH
@@ -753,6 +721,12 @@ document.getElementById('gen-run').addEventListener('click', async () => {
     document.getElementById('gen-input').value='';
     document.getElementById('gen-panel').classList.remove('open');
     showToast('🎨 Imagem gerada!');
+    setTimeout(async () => {
+        const msgs = await loadMsgs(room);
+        lastMsgCount = msgs.length;
+        currentMsgs = msgs;
+        renderMsgs(msgs); scrollBot(true);
+    }, 1500);
   } catch(e){ showToast('Erro ao gerar imagem'); }
   document.getElementById('gen-run').disabled=false;
 });
@@ -767,18 +741,10 @@ function openApp(url){ window.open(url,'_blank'); closeApps(); }
 document.getElementById('apps-panel').addEventListener('click', e=>{ if(e.target===document.getElementById('apps-panel')) closeApps(); });
 
 // ═══════════════════════════════════════════════
-// MEMBERS
+// MEMBERS (Desativado no modo Planilha para poupar quota)
 // ═══════════════════════════════════════════════
 document.getElementById('members-btn').addEventListener('click', ()=>{
-  db.ref('presence').once('value', snap => {
-    const active = [];
-    const now = Date.now();
-    snap.forEach(child => {
-      const v = child.val();
-      if (v && now - v.t < 45000) active.push(v.nick);
-    });
-    showToast(active.length?'👥 Online: '+active.join(', '):'👥 Ninguém mais online',3500);
-  });
+  showToast('👥 Presença ao vivo desativada na versão serverless.', 3500);
 });
 
 // ═══════════════════════════════════════════════
